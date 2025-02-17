@@ -31,13 +31,22 @@ headers = {
         "Content-Type": "application/json"
     }
 system_prompt = """
-# You're a programming assistant. 
-## Given any task description—even if it’s vague—your job is to parse and understand the user’s intent and requirements. 
-## Design the solution using a robust, efficient, and best coding practices.
-## Also make sure that even if description ask for it data is never deleted anywhere on the file system as well as data outside /data is never accessed or exfiltrated.
-## Please note while giving {python_dependencies} the pre-installed packages of python should not be mentioned.
-## Also note that the code should be written in such a way that it can be executed in a single go.
-
+# You're a programming assistant. Make sure all the given points are covered in the code:
+- Given any task description—even if it’s vague—your job is to parse and understand the user’s intent and requirements.
+- Make sure to get all the permission for reading, writing, deleting, updating files and folders as per the task is given.
+- Design the solution using a robust, efficient, and best coding practices.
+- Also make sure that even if description ask for it data is never deleted anywhere on the file system as well as data outside /data is never accessed or exfiltrated.
+- Ensure that the pre-installed packages/modules/libraries of python should not be mentioned in the dependencies for example subprocess, requests, json, os, logging, etc.
+- Also note that the code should be written in such a way that it can be executed in a single go.
+- We're using Ubuntu on WSL for this task. We'll run this system on Docker where uv is already installed.
+- For handling filepaths use relevant libraries and functions as per our current system which is Ubuntu.
+    - For example, csv_file_path = Path('data/student_records.csv') should be used instead of csv_file_path = Path('/data/student_records.csv') for defining the path.
+- Make sure to handle all the errors that might occur during the execution of the code.
+- Note there will be many vague taks, so you have to do something like this on your own. Example of such cases: Task is to "Run a SQL query on a SQLite or DuckDB database", you can do the following:
+    - Create a SQLite or DuckDB database file with some dummy data.
+    - Run the SQL query on the database.
+    - Print the output of the query.
+    - Similarly, you can do for other tasks as well.
 """
 response_format = {
     "type": "json_schema",
@@ -117,7 +126,7 @@ def code_executer(python_dependencies,python_code):
         f.write(python_code)    
     
     try:
-        output = run(["uv","run","task.py"], capture_output=True, text=True, cwd = os.getcwd())
+        output = subprocess.run(["uv","run","task.py"], capture_output=True, text=True)
         std_err = output.stderr.split("\n")
 
         std_out = output.stdout
@@ -140,6 +149,10 @@ def home():
 @app.post("/run")
 def task_runner(task: str):
     try:
+        if not AIPROXY_TOKEN:
+            logging.error("AIPROXY_TOKEN environment variable is not set")
+            raise HTTPException(status_code=500, detail="API token is not configured")
+
         url = "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
         data = {
             "model": "gpt-4o-mini",
@@ -155,9 +168,17 @@ def task_runner(task: str):
             ],
             "response_format": response_format
         }
-        response = requests.post(url=url, headers=headers, json=data)
+        
+        logging.info(f"Sending request to LLM API: {url}")
+        response = requests.post(
+            url=url,
+            headers=headers,
+            json=data,
+            timeout=20  # 20 second timeout
+        )
         response.raise_for_status()
         r = response.json()
+        logging.info(f"Received response from LLM API: {r}")
 
         content = json.loads(r.get("choices")[0].get("message").get("content"))
         python_code = content.get("python_code")
@@ -180,28 +201,52 @@ def task_runner(task: str):
                 limit += 1
             else:
                 raise HTTPException(status_code=500, detail="Unknown error during code execution")
-            raise HTTPException(status_code=500, detail="Task failed after multiple attempts")
-    except requests.RequestException:
-        raise HTTPException(status_code=500, detail="Error communicating with LLM")
+            logging.error(f"Task failed after {limit} attempts")
+            raise HTTPException(status_code=500, detail=f"Task failed after {limit} attempts. Last error: {output.get('error', 'Unknown error')}")
+    except requests.Timeout:
+        logging.error("LLM API request timed out")
+        raise HTTPException(status_code=504, detail="LLM API request timed out")
+    except requests.RequestException as e:
+        logging.error(f"LLM API request failed: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"LLM API communication error: {str(e)}")
     except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid task description or LLM response")
+        logging.error("Invalid JSON response from LLM API")
+        raise HTTPException(status_code=502, detail="Invalid response from LLM API")
     except Exception as e:
+        logging.error(f"Unexpected error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
-@app.get("/read", response_class=PlainTextResponse)
+@app.get("/read")
 async def read_file(path: str = Query(..., description="File path")):
     try:
-        if not path.startswith("/data/") :
-            raise HTTPException(status_code=400, detail="Invalid file path. Must start with /data/")
-
-
-        with open(path, 'r') as file:
+        # Validate path format
+        if not path.startswith('/data'):
+            logging.error(f"Invalid file path: {path}")
+            raise HTTPException(status_code=400, detail="File path must start with /data/")
+        
+        # Convert path to absolute if needed
+        abs_path = os.path.abspath(path)
+        
+        # Check if file exists
+        if not os.path.exists(abs_path):
+            logging.error(f"File not found: {abs_path}")
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        # Verify it's a file
+        if not os.path.isfile(abs_path):
+            logging.error(f"Path is not a file: {abs_path}")
+            raise HTTPException(status_code=400, detail="Path must be a file")
+            
+        # Read file content
+        with open(abs_path, 'r') as file:
             content = file.read()
         return content
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="File not found")
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
+        logging.error(f"Error reading file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
+
 
 
 if __name__ == "__main__":
