@@ -11,6 +11,7 @@ import requests
 import os
 import json
 from typing import Dict, Any, List
+from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
@@ -33,21 +34,29 @@ headers = {
 system_prompt = """
 # You're a programming assistant. Make sure all the given points are covered in the code:
 - Given any task description—even if it’s vague—your job is to parse and understand the user’s intent and requirements.
-- Make sure to get all the permission for reading, writing, deleting, updating files and folders as per the task is given.
+- You'll be working in the / folder of the system where you have to read, write, update and process files.
+- Make sure to get all the permission for reading, writing, deleting, updating files and folders as per the task is given in your code.
+- For tasks related to image processing, make sure to convert the image to base64 and then process it.
+- Some tasks give error like a particule module is not installed or it's not in your PATH. So, make sure to install the required module and set the corect PATH whenever required.
+- Some tasks require LLM API calls, make sure to handle them as well just like we're handling them in this application also.
+- Some tasks may require to run javascript (npm, npx) packages, bash scripts, etc. Make sure to handle them as well by specifie 
+- We'll always work with a folder named /data. Make sure to read and write files in this folder only.
+- This /data folder will be located in same directory where the script is running. So write the script accordingly.
 - Design the solution using a robust, efficient, and best coding practices.
 - Also make sure that even if description ask for it data is never deleted anywhere on the file system as well as data outside /data is never accessed or exfiltrated.
-- Ensure that the pre-installed packages/modules/libraries of python should not be mentioned in the dependencies for example subprocess, requests, json, os, logging, etc.
-- Also note that the code should be written in such a way that it can be executed in a single go.
+- Ensure that the pre-installed packages/modules/libraries of python should not be mentioned in the {python_dependencies}. For example, modules like "subprocess", "requests", "json", "os", "logging", "sys", "math", "datetime", "re", etc are pre-installed modules. They and all of other pre-installed libraries mustn't be in {python_dependencies}.- All codes should be written in such a way that it can be executed in a single go.
 - We're using Ubuntu on WSL for this task. We'll run this system on Docker where uv is already installed.
 - For handling filepaths use relevant libraries and functions as per our current system which is Ubuntu.
-    - For example, csv_file_path = Path('data/student_records.csv') should be used instead of csv_file_path = Path('/data/student_records.csv') for defining the path.
+    - This can also happend that in the task they are not providing clear path to access some file so you should automatically detect it.
 - Make sure to handle all the errors that might occur during the execution of the code.
 - Note there will be many vague taks, so you have to do something like this on your own. Example of such cases: Task is to "Run a SQL query on a SQLite or DuckDB database", you can do the following:
     - Create a SQLite or DuckDB database file with some dummy data.
     - Run the SQL query on the database.
     - Print the output of the query.
     - Similarly, you can do for other tasks as well.
+- Make sure to include the relevant libraries and functions required for the task.
 """
+
 response_format = {
     "type": "json_schema",
     "json_schema": {
@@ -216,38 +225,37 @@ def task_runner(task: str):
         logging.error(f"Unexpected error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
+config = {"root": "/data"}
+
 @app.get("/read")
-async def read_file(path: str = Query(..., description="File path")):
+def read_file(path: str = Query(..., description="Path to the file to read")):
+    """
+    Read the content of a file from the specified path.
+    
+    Args:
+        path (str): Path to the file relative to /data or absolute path
+        
+    Returns:
+        PlainTextResponse: Content of the file if found
+        HTTPException: 404 if file not found
+    """
+    # Handle both relative and absolute paths
+    if path.startswith("/data"):
+        file_path = Path(path)
+    else:
+        file_path = Path(config["root"])/path
+    
+    # Check if file exists
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    # Read and return file content
     try:
-        # Validate path format
-        if not path.startswith('/data'):
-            logging.error(f"Invalid file path: {path}")
-            raise HTTPException(status_code=400, detail="File path must start with /data/")
-        
-        # Convert path to absolute if needed
-        abs_path = os.path.abspath(path)
-        
-        # Check if file exists
-        if not os.path.exists(abs_path):
-            logging.error(f"File not found: {abs_path}")
-            raise HTTPException(status_code=404, detail="File not found")
-        
-        # Verify it's a file
-        if not os.path.isfile(abs_path):
-            logging.error(f"Path is not a file: {abs_path}")
-            raise HTTPException(status_code=400, detail="Path must be a file")
-            
-        # Read file content
-        with open(abs_path, 'r') as file:
+        with open(file_path, "r") as file:
             content = file.read()
-        return content
-    except HTTPException:
-        raise
+        return PlainTextResponse(content)
     except Exception as e:
-        logging.error(f"Error reading file: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
-
-
 
 if __name__ == "__main__":
     import uvicorn
