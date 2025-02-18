@@ -44,7 +44,8 @@ system_prompt = """
 - This /data folder will be located in same directory where the script is running. So write the script accordingly.
 - Design the solution using a robust, efficient, and best coding practices.
 - Also make sure that even if description ask for it data is never deleted anywhere on the file system as well as data outside /data is never accessed or exfiltrated.
-- Ensure that the pre-installed packages/modules/libraries of python should not be mentioned in the {python_dependencies}. For example, modules like "subprocess", "requests", "json", "os", "logging", "sys", "math", "datetime", "re", etc are pre-installed modules. They and all of other pre-installed libraries mustn't be in {python_dependencies}.- All codes should be written in such a way that it can be executed in a single go.
+- Ensure that the pre-installed packages/modules/libraries of Python are NOT mentioned in the {python_dependencies}. For example, modules like subprocess, requests, json, os, logging, sys, math, datetime, re, etc., are pre-installed modules. They and all other pre-installed libraries must NOT be included in {python_dependencies}. Including such libraries will cause errors and instability in the application.
+- All codes should be written in such a way that it can be executed in a single go.
 - We're using Ubuntu on WSL for this task. We'll run this system on Docker where uv is already installed.
 - For handling filepaths use relevant libraries and functions as per our current system which is Ubuntu.
     - This can also happend that in the task they are not providing clear path to access some file so you should automatically detect it.
@@ -239,24 +240,49 @@ def read_file(path: str = Query(..., description="Path to the file to read")):
         PlainTextResponse: Content of the file if found
         HTTPException: 404 if file not found
     """
-    # Handle both relative and absolute paths
-    if path.startswith("/data"):
-        file_path = Path(path)
-    else:
-        file_path = Path(config["root"])/path
-    
-    # Check if file exists
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    # Read and return file content
     try:
-        with open(file_path, "r") as file:
-            content = file.read()
-        return PlainTextResponse(content)
+        # Handle both relative and absolute paths
+        if path.startswith("/data"):
+            file_path = Path(path)
+        else:
+            file_path = Path(config["root"]) / path
+        
+        # Normalize the path to prevent directory traversal
+        file_path = file_path.resolve()
+        
+        # Verify the path is within the allowed directory
+        if not str(file_path).startswith(str(Path(config["root"]).resolve())):
+            raise HTTPException(status_code=403, detail="Access to this path is not allowed")
+        
+        # Log the resolved path for debugging
+        logging.debug(f"Resolved file path: {file_path}")
+        
+        # Check if file exists
+        if not file_path.exists():
+            logging.error(f"File not found: {file_path}")
+            raise HTTPException(status_code=404, detail=f"File not found at path: {path}")
+        
+        # Check if it's a directory
+        if file_path.is_dir():
+            logging.error(f"Path is a directory: {file_path}")
+            raise HTTPException(status_code=400, detail="Path points to a directory")
+            
+        # Read and return file content
+        try:
+            with open(file_path, "r") as file:
+                content = file.read()
+            return PlainTextResponse(content)
+        except PermissionError:
+            logging.error(f"Permission denied for file: {file_path}")
+            raise HTTPException(status_code=403, detail="Permission denied")
+        except Exception as e:
+            logging.error(f"Error reading file {file_path}: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
+            
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
+        logging.error(f"Error processing file request: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8090)
