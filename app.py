@@ -26,7 +26,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-AIPROXY_TOKEN = os.environ.get("AIPROXY_TOKEN")
+AIPROXY_TOKEN = os.getenv("AIPROXY_TOKEN")
 headers = {
         "Authorization": f"Bearer {AIPROXY_TOKEN}",
         "Content-Type": "application/json"
